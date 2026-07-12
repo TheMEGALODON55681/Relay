@@ -1,0 +1,33 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+build/
+dist/
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Local data / generated artifacts
+*.db
+*.sqlite
+*.sqlite3
+*.joblib
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local Claude Code settings (machine-specific paths/permissions)
+.claude/settings.local.json
