@@ -24,10 +24,20 @@
 ## Overview
 
 <p align="center">
-  <img src="assets/dashboard-overview.png" alt="Relay SOC dashboard, Security Overview tab showing threat level, active incidents, alert rate, and sensors quarantined for a live LOAD_INFLATION run" style="width: 95%; height: auto; border-radius: 8px;" />
+  <img src="assets/dashboard-overview.png" alt="Relay SOC dashboard, Security Overview tab during a live LOAD_INFLATION run: top status bar showing CRITICAL posture and gateway health, the unified threat score card with rule/statistical/ML/physics contributions, and the detection feed" style="width: 95%; height: auto; border-radius: 8px;" />
 </p>
 
 A smart grid optimizes generation and distribution from live sensor data. That data is also the attack surface: a false-data-injection (FDI) attack manipulates readings so the grid acts on a false picture of reality. Inflate a load reading and the optimizer over-generates, raising cost and emissions for no reason. Suppress it and the optimizer under-generates against real demand, cutting reserve margin and risking unsafe dispatch. An optimizer that trusts its inputs unconditionally is only as safe as the sensors feeding it, and those sensors can be attacked.
+
+## Design
+
+Red means quarantined. Nothing else in this interface is ever red: not a button, not a chart series, not a negative delta, not a hover state. A suspicious reading, a critical incident, a low-confidence agent decision, all of it renders in blue or amber. Red marks exactly one state: a sensor whose raw reading is being withheld from dispatch. A reviewer reads containment posture at a glance, without parsing a single label, because color only ever means one thing here.
+
+The rest of the token system is a locked seven-color palette: a dark graphite background, two elevated surface tones for panels and table headers, a neutral border color, two text tones for primary and muted content, and a single blue accent reserved for interactive elements, never for status. Three status colors sit on top of that base: muted green for TRUSTED, amber for ESTIMATED, and the one red for QUARANTINED. Nothing else borrows from that set.
+
+Typography is IBM Plex Sans for prose and headings, IBM Plex Mono for every number, sensor ID, and timestamp, so telemetry never shifts horizontally as it updates on a live-refreshing panel. The choice is deliberate: this project is an IBM internship build, and the typeface carries that without a splash screen.
+
+Five surfaces are hand-built with the app's own CSS classes instead of stock Streamlit widgets: the top status bar, the threat score card, the detection feed, the agent pipeline, and the gateway state view. Density and color stay under the app's control end to end. The sidebar, the tabs, the buttons stay plain Streamlit. Nobody looks at that scaffolding.
 
 Relay treats optimization and security as one problem. It runs a simulated grid, injects three FDI attack patterns against it, and defends it with a four-detector ensemble and a bounded, policy-gated multi-agent SOC:
 
@@ -49,10 +59,18 @@ The optimizer is deliberately simple: a dispatch stub that reports cost and emis
 - **Trusted Data Gateway.** Every sensor stream carries a TRUSTED, ESTIMATED, or QUARANTINED label. The optimizer can only read a TRUSTED or ESTIMATED value; a quarantined sensor's raw reading is withheld until an estimation fallback is enabled.
 - **Alert correlation.** Alerts within a configurable time window on related assets fold into a single incident with one timeline, instead of opening a new case per alert.
 - **Evaluation harness.** Runs each attack scenario N times with randomized parameters under a fixed seed, security ON and OFF, and reports detection rate, false-positive rate, latency, and prevented cost/emissions/unnecessary-generation to `results/`.
-- **Live SOC dashboard.** Five Streamlit tabs (Security Overview, Live Agent Activity, Incident Investigation, Detection Analytics, Automation Center) drive the same scenario twice, security enabled and disabled, and show the delta.
+- **Live SOC dashboard.** Six Streamlit tabs (Security Overview, Gateway State, Live Agent Activity, Incident Investigation, Detection Analytics, Automation Center) drive the same scenario twice, security enabled and disabled, and show the delta.
+
+<p align="center">
+  <img src="assets/threat-scoring.png" alt="Relay unified threat score card: risk score 0.68 classified SUSPICIOUS for GEN-1, with the four detector contributions (rule, statistical, ML, physics) broken out as individual bars" style="width: 60%; height: auto; border-radius: 8px;" />
+</p>
 
 <p align="center">
   <img src="assets/fdi-detection.png" alt="Relay Detection Analytics tab: per-tick rule, statistical, ML, physics, and unified risk scores for SUB-1, spiking at attack onset (tick 35)" style="width: 95%; height: auto; border-radius: 8px;" />
+</p>
+
+<p align="center">
+  <img src="assets/gateway-state.png" alt="Relay Gateway State tab: FEEDER-1, FEEDER-3, FEEDER-4, and SUB-1 shown ESTIMATED in amber, FEEDER-2 shown TRUSTED in green, each sensor as its own status-colored tile" style="width: 95%; height: auto; border-radius: 8px;" />
 </p>
 
 ## Architecture
@@ -93,7 +111,7 @@ flowchart TD
 ```
 
 <p align="center">
-  <img src="assets/agent-pipeline.png" alt="Relay Live Agent Activity tab: Triage Agent decision card expanded to show its raw JSON output (assessment, severity, decision, confidence, rationale) followed by the Investigation Agent" style="width: 95%; height: auto; border-radius: 8px;" />
+  <img src="assets/agent-pipeline.png" alt="Relay Live Agent Activity tab: the four-stage agent pipeline (Triage, Investigation, Response, Analyst) shown side by side, each stage card summarizing its output, duration, and confidence, with the Analyst stage highlighted as the live stage" style="width: 95%; height: auto; border-radius: 8px;" />
 </p>
 
 ### Project structure
@@ -209,10 +227,6 @@ Produced by `python -m evaluation.harness`: each of the three attack scenarios r
 
 Unnecessary generation avoided is the reliable signal for LOAD_INFLATION and LOAD_SUPPRESSION. Dollar cost prevented runs negative for LOAD_SUPPRESSION: security restores dispatch to the true, higher load, which costs more but corrects an unsafe under-generation. COORDINATED_FDI shifts feeder sensors, not the substation the optimizer dispatches from, so its reading stays correct in most runs and the ON/OFF dispatch is identical; the small negative numbers come from the minority of runs where cross-sensor physics evidence still implicates the substation and containment quarantines it as a precaution, trading its already-correct live reading for a slightly noisier estimate. The attack is still caught in every run (see the 100% detection rate above); the near-zero deltas are a limitation of the single-sensor optimizer stub, not a detection failure.
 
-<p align="center">
-  <img src="assets/automation-center.png" alt="Relay Automation Center tab: executed response actions (quarantine, estimation fallback, freeze, recalculate dispatch) versus actions held for operator approval, plus the security ON vs OFF dispatch delta for the run" style="width: 95%; height: auto; border-radius: 8px;" />
-</p>
-
 ## Design decisions
 
 A few choices worth flagging:
@@ -233,14 +247,14 @@ Running Investigation, Response, and Analyst on every alert is expensive and unn
 The live pipeline (`main.py`) needed exactly one publish/subscribe seam between ingestion and detection, not a production message queue. `automation/event_bus.py` keeps that seam explicit so a real broker (MQTT or similar) can be substituted later without touching the detection, SOC, or gateway code, none of which know or care where an event came from.
 
 **Why Streamlit instead of a custom frontend?**
-The dashboard's job is to make the pipeline's internal state legible, not to be a polished product surface. Streamlit renders five tabs of live state directly from Python objects with no separate frontend build, which kept the time budget on the detection and SOC logic instead of a UI layer.
+The dashboard's job is to make the pipeline's internal state legible, not to be a polished product surface. Streamlit renders six tabs of live state directly from Python objects with no separate frontend build, which kept the time budget on the detection and SOC logic instead of a UI layer.
 
 ## Roadmap
 
 Near term:
 - [ ] Autoencoder and LSTM temporal detection, ensemble scoring, and calibration
 - [ ] A real MQTT broker in place of the in-process event bus
-- [ ] A dedicated Trusted Data Gateway status view in the dashboard (today the gateway's TRUSTED/ESTIMATED/QUARANTINED state is only visible as a summary count and through the response actions that drive it)
+- [ ] QUARANTINED as a durable end state: the response playbook currently pairs `QUARANTINE_SENSOR` with `ENABLE_ESTIMATION_FALLBACK` for every affected asset, so a sensor's terminal gateway status is always TRUSTED or ESTIMATED, never QUARANTINED, even though the dashboard's gateway state view renders all three. Worth a policy-engine change to hold some sensors at QUARANTINED without an estimation fallback.
 
 Mid term:
 - [ ] Additional attack types: replay, timestamp manipulation, command injection

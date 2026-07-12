@@ -1,10 +1,32 @@
+[[theme.fontFaces]]
+family = "IBM Plex Sans"
+url = "https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
+
+[[theme.fontFaces]]
+family = "IBM Plex Mono"
+url = "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&display=swap"
+
 [theme]
 base = "dark"
-primaryColor = "#3B82F6"
-backgroundColor = "#0B1220"
-secondaryBackgroundColor = "#131B2E"
-textColor = "#E2E8F0"
-font = "sans serif"
+primaryColor = "#3B9EFF"
+backgroundColor = "#0E1116"
+secondaryBackgroundColor = "#161A21"
+textColor = "#E8EDF4"
+borderColor = "#2A313B"
+linkColor = "#3B9EFF"
+dataframeBorderColor = "#2A313B"
+dataframeHeaderBackgroundColor = "#1C222B"
+font = "IBM Plex Sans, sans-serif"
+headingFont = "IBM Plex Sans, sans-serif"
+codeFont = "IBM Plex Mono, monospace"
+baseFontSize = 14
+baseRadius = "small"
+showWidgetBorder = true
+chartCategoricalColors = ["#3B9EFF", "#57A773", "#D9A441", "#8A94A3", "#6E7B8F", "#1C6FCC"]
+
+[theme.sidebar]
+backgroundColor = "#161A21"
+borderColor = "#2A313B"
 
 [server]
 headless = true

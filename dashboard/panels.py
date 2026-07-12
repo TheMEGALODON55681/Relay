@@ -4,6 +4,8 @@ into the current Streamlit container - kept separate from dashboard/app.py, whic
 owns page setup, the sidebar, and driving a live run.
 """
 
+from collections import Counter
+
 import pandas as pd
 import streamlit as st
 
@@ -12,8 +14,17 @@ from dashboard.live_run import RunTrace
 from evaluation.harness import ATTACK_START_TICK, TICKS_PER_RUN
 from simulator.grid import SUBSTATION
 
-_CLASSIFICATION_COLOR = {"NORMAL": "#64748B", "OBSERVE": "#3B82F6", "SUSPICIOUS": "#D97706", "HIGH_RISK": "#EA580C", "CRITICAL": "#DC2626"}
-_STATUS_COLOR = {"TRUSTED": "#16A34A", "ESTIMATED": "#D97706", "QUARANTINED": "#DC2626"}
+# Locked design tokens (PRD Section 4). Red is reserved for QUARANTINED and must never
+# appear for a classification or incident severity, however critical - only the gateway
+# status language below is allowed to use it.
+_CLASSIFICATION_COLOR = {
+    "NORMAL": "#8A94A3", "LOW": "#8A94A3",
+    "OBSERVE": "#3B9EFF", "MEDIUM": "#3B9EFF",
+    "SUSPICIOUS": "#D9A441",
+    "HIGH_RISK": "#D9A441", "HIGH": "#D9A441",
+    "CRITICAL": "#D9A441",
+}
+_STATUS_COLOR = {"TRUSTED": "#57A773", "ESTIMATED": "#D9A441", "QUARANTINED": "#E5484D"}
 _ACTIVE_STATUSES = {"NEW", "TRIAGING", "INVESTIGATING", "CONTAINMENT_PENDING", "CONTAINED", "MONITORING"}
 _SEVERITY_ORDER = ["LOW", "MEDIUM", "HIGH", "CRITICAL"]
 _MINUTES_PER_RUN = TICKS_PER_RUN * settings.TICK_SECONDS / 60
@@ -21,6 +32,83 @@ _MINUTES_PER_RUN = TICKS_PER_RUN * settings.TICK_SECONDS / 60
 
 def _badge(label: str, color: str) -> str:
     return f'<span style="background:{color}22;color:{color};border:1px solid {color}66;border-radius:4px;padding:2px 8px;font-size:0.85em;font-weight:600;">{label}</span>'
+
+
+def render_status_bar(on: RunTrace) -> None:
+    active = [i for i in on.incidents if i.status in _ACTIVE_STATUSES]
+    posture = max((i.severity for i in on.incidents), default="NOMINAL", key=lambda s: _SEVERITY_ORDER.index(s))
+    counts = Counter(on.gateway_status.values())
+    gateway = " &nbsp; ".join(
+        f'<span style="color:{_STATUS_COLOR[status]}">{counts[status]} {status}</span>'
+        for status in ("TRUSTED", "ESTIMATED", "QUARANTINED") if counts.get(status)
+    )
+    st.markdown(
+        f"""<div class="rl-topbar">
+            <div class="rl-topbar__item"><span class="rl-topbar__label">System posture</span><span class="rl-topbar__value">{posture}</span></div>
+            <div class="rl-topbar__item"><span class="rl-topbar__label">Active incidents</span><span class="rl-topbar__value">{len(active)}</span></div>
+            <div class="rl-topbar__item"><span class="rl-topbar__label">Gateway health</span><span class="rl-topbar__value">{gateway}</span></div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
+
+def render_threat_score_card(on: RunTrace) -> None:
+    if not on.detection_rows:
+        st.caption("No detection data for this run.")
+        return
+    last_tick = max(r["tick"] for r in on.detection_rows)
+    row = max((r for r in on.detection_rows if r["tick"] == last_tick), key=lambda r: r["risk_score"])
+    detectors = [("Rule", row["rule_score"]), ("Statistical", row["statistical_score"]), ("ML", row["ml_score"]), ("Physics", row["physics_score"])]
+    bars = "".join(
+        f"""<div class="rl-detector">
+            <div class="rl-detector__label"><span>{name}</span><span class="rl-detector__value">{val:.2f}</span></div>
+            <div class="rl-detector__track"><div class="rl-detector__fill" style="width:{val * 100:.0f}%"></div></div>
+        </div>"""
+        for name, val in detectors
+    )
+    color = _CLASSIFICATION_COLOR.get(row["classification"], "#8A94A3")
+    st.markdown(
+        f"""<div class="rl-card">
+            <div class="rl-card__title">Unified threat score &middot; {row["sensor_id"]} &middot; tick {row["tick"]}</div>
+            <div style="display:flex;align-items:baseline;gap:10px;margin-bottom:10px;">
+                <span class="rl-mono" style="font-size:1.8em;font-weight:700;color:{color};">{row["risk_score"]:.2f}</span>
+                <span class="rl-badge" style="background:{color}22;color:{color};border:1px solid {color}66;">{row["classification"]}</span>
+            </div>
+            <div class="rl-detectors">{bars}</div>
+        </div>""",
+        unsafe_allow_html=True,
+    )
+
+
+def render_detection_feed(on: RunTrace, limit: int = 12) -> None:
+    rows = sorted((r for r in on.detection_rows if r["classification"] != "NORMAL"), key=lambda r: r["tick"], reverse=True)[:limit]
+    if not rows:
+        st.caption("No anomalous readings this run.")
+        return
+    items = "".join(
+        f"""<div class="rl-feed__row" style="border-left-color:{_CLASSIFICATION_COLOR.get(r["classification"], "#8A94A3")}">
+            <span class="rl-feed__tick">t{r["tick"]:03d}</span>
+            <span class="rl-feed__sensor">{r["sensor_id"]}</span>
+            <span class="rl-feed__class" style="color:{_CLASSIFICATION_COLOR.get(r["classification"], "#8A94A3")}">{r["classification"]}</span>
+            <span class="rl-feed__score">{r["risk_score"]:.2f}</span>
+        </div>"""
+        for r in rows
+    )
+    st.markdown(f'<div class="rl-card"><div class="rl-card__title">Detection feed</div><div class="rl-feed">{items}</div></div>', unsafe_allow_html=True)
+
+
+def render_gateway_state(on: RunTrace) -> None:
+    if not on.gateway_status:
+        st.caption("No gateway data for this run.")
+        return
+    tiles = "".join(
+        f"""<div class="rl-gateway-tile" style="border-left-color:{_STATUS_COLOR[status]}">
+            <div class="rl-gateway-tile__id">{sensor}</div>
+            <div class="rl-gateway-tile__status" style="color:{_STATUS_COLOR[status]}">{status}</div>
+        </div>"""
+        for sensor, status in sorted(on.gateway_status.items())
+    )
+    st.markdown(f'<div class="rl-gateway-grid">{tiles}</div>', unsafe_allow_html=True)
 
 
 def render_security_overview(on: RunTrace, aggregate: dict | None) -> None:
@@ -47,6 +135,13 @@ def render_security_overview(on: RunTrace, aggregate: dict | None) -> None:
     else:
         st.caption("Latency figures are aggregate means from the last evaluation harness run, not this single live run.")
 
+    st.divider()
+    card_col, feed_col = st.columns([3, 2])
+    with card_col:
+        render_threat_score_card(on)
+    with feed_col:
+        render_detection_feed(on)
+
 
 _AGENT_SUMMARY = {
     "triage_agent": lambda o: f"{o.get('decision')} - {o.get('rationale', '')[:120]}",
@@ -56,19 +151,39 @@ _AGENT_SUMMARY = {
 }
 
 
+_PIPELINE_AGENTS = ["triage_agent", "investigation_agent", "response_agent", "analyst_agent"]
+_PIPELINE_LABELS = {"triage_agent": "Triage", "investigation_agent": "Investigation", "response_agent": "Response", "analyst_agent": "Analyst"}
+
+
 def render_agent_activity(on: RunTrace) -> None:
     if not on.decisions:
         st.info("No incident escalated during this run - nothing for the agents to act on.")
         return
-    for decision in sorted(on.decisions, key=lambda d: d.timestamp):
-        summarize = _AGENT_SUMMARY.get(decision.agent, lambda o: str(o))
-        with st.container(border=True):
-            top = st.columns([2, 5, 1])
-            top[0].markdown(_badge(decision.agent.replace("_", " ").title(), "#3B82F6"), unsafe_allow_html=True)
-            top[1].write(summarize(decision.output))
-            top[2].caption(f"{decision.duration_ms} ms")
-            with st.expander("Raw output"):
-                st.json(decision.output)
+    ordered = sorted(on.decisions, key=lambda d: d.timestamp)
+    by_agent = {d.agent: d for d in ordered}
+    live_agent = ordered[-1].agent
+
+    stages = []
+    for agent in _PIPELINE_AGENTS:
+        decision = by_agent.get(agent)
+        if decision is None:
+            stages.append(f"""<div class="rl-pipeline__stage rl-pipeline__stage--pending">
+                <div class="rl-pipeline__name">{_PIPELINE_LABELS[agent]}</div>
+                <div class="rl-pipeline__body">Not reached</div>
+            </div>""")
+            continue
+        summarize = _AGENT_SUMMARY.get(agent, lambda o: str(o))
+        active_cls = " rl-pipeline__stage--active" if agent == live_agent else ""
+        stages.append(f"""<div class="rl-pipeline__stage{active_cls}">
+            <div class="rl-pipeline__name">{_PIPELINE_LABELS[agent]}</div>
+            <div class="rl-pipeline__body">{summarize(decision.output)}</div>
+            <div class="rl-pipeline__meta">{decision.duration_ms} ms &middot; {decision.confidence:.0%} confidence</div>
+        </div>""")
+    st.markdown(f'<div class="rl-pipeline">{"".join(stages)}</div>', unsafe_allow_html=True)
+
+    for decision in ordered:
+        with st.expander(f"{_PIPELINE_LABELS.get(decision.agent, decision.agent)} raw output"):
+            st.json(decision.output)
 
 
 def render_incident_investigation(on: RunTrace) -> None:

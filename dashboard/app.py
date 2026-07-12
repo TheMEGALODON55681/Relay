@@ -14,11 +14,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import streamlit as st  # noqa: E402
 
 from config import settings  # noqa: E402
-from dashboard import panels  # noqa: E402
+from dashboard import panels, theme  # noqa: E402
 from dashboard.live_run import run_live  # noqa: E402
 from evaluation.harness import SCENARIOS  # noqa: E402
 
 st.set_page_config(page_title=f"{settings.PROJECT_NAME} SOC", layout="wide")
+theme.inject()
 
 
 @st.cache_data
@@ -51,15 +52,18 @@ if "trace_on" not in st.session_state:
 
 on, off = st.session_state["trace_on"], st.session_state["trace_off"]
 aggregate = _load_aggregate()
+panels.render_status_bar(on)
 
-tabs = st.tabs(["Security Overview", "Live Agent Activity", "Incident Investigation", "Detection Analytics", "Automation Center"])
+tabs = st.tabs(["Security Overview", "Gateway State", "Live Agent Activity", "Incident Investigation", "Detection Analytics", "Automation Center"])
 with tabs[0]:
     panels.render_security_overview(on, aggregate)
 with tabs[1]:
-    panels.render_agent_activity(on)
+    panels.render_gateway_state(on)
 with tabs[2]:
-    panels.render_incident_investigation(on)
+    panels.render_agent_activity(on)
 with tabs[3]:
-    panels.render_detection_analytics(on, aggregate)
+    panels.render_incident_investigation(on)
 with tabs[4]:
+    panels.render_detection_analytics(on, aggregate)
+with tabs[5]:
     panels.render_automation_center(on, off)
