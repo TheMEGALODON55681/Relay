@@ -1,30 +1,56 @@
 """Integration test: one full incident from telemetry to safe dispatch. Proves a
-poisoned reading is quarantined and the optimizer receives the estimated value,
+poisoned reading is quarantined and the optimizer receives the reconstructed value,
 never the manipulated one (PRD Section 11).
 """
 
 import uuid
 
+import numpy as np
+
+from config import settings
+from detection.risk_engine import RiskEngine
+from evaluation.harness import (
+    ATTACK_START_TICK,
+    ESCALATING_FDI_DEMO_SEED,
+    ESCALATING_FDI_SNAPSHOT_TICK,
+    SCENARIO_SEED_OFFSET,
+    TICKS_PER_RUN,
+    _dispatch_substation,
+    _RunTracker,
+    build_attack,
+    tick_readings,
+)
 from gateway.trusted_data_gateway import TrustedDataGateway
 from optimization import optimizer
-from schemas.models import DetectionResult
-from simulator.grid import SUBSTATION
+from schemas.models import DetectionResult, TelemetryEvent
+from simulator.grid import BATTERY, FEEDERS, GENERATORS, SUBSTATION, Grid
 from soc.incident_manager import IncidentManager
 from soc.orchestrator import run_incident
 from tests.conftest import make_event
+
+
+def _seed_trusted_baseline(gateway: TrustedDataGateway, substation_load: float = 50.0, ticks: int = 10) -> None:
+    """Records substation_load / 4 for each feeder alongside the substation's own
+    load for `ticks` ticks, so every member of SUBSTATION_AGGREGATION has a recent
+    TRUSTED reading to reconstruct from. Real load holds steady; a poisoned reading
+    is never recorded here - record() is only ever called after containment reacts.
+    """
+    feeder_load = substation_load / len(FEEDERS)
+    for tick in range(ticks):
+        gateway.record(make_event(sensor_id=SUBSTATION, asset_id=SUBSTATION, tick=tick, load=substation_load))
+        for feeder in FEEDERS:
+            gateway.record(make_event(sensor_id=feeder, asset_id=feeder, tick=tick, load=feeder_load))
 
 
 def test_poisoned_reading_never_reaches_the_optimizer(tmp_path):
     gateway = TrustedDataGateway()
     manager = IncidentManager(db_path=str(tmp_path / "incident.db"))
 
-    # Real load holds steady around 50 MW; the gateway needs this history to estimate from.
-    for tick in range(10):
-        gateway.record(make_event(sensor_id=SUBSTATION, asset_id=SUBSTATION, tick=tick, load=50.0))
+    _seed_trusted_baseline(gateway, substation_load=50.0)
 
     # Load inflation attack: reported 90 MW against a true ~50 MW (PRD Section 6 example).
     # Not recorded into the gateway's history - a poisoned reading must never become
-    # part of what "last known good" is computed from.
+    # part of what a peer's "last known good" is computed from.
     poisoned = make_event(sensor_id=SUBSTATION, asset_id=SUBSTATION, tick=10, load=90.0, is_attacked=True)
 
     detection = DetectionResult(
@@ -52,10 +78,13 @@ def test_poisoned_reading_never_reaches_the_optimizer(tmp_path):
     assert contained, f"expected an executed QUARANTINE_SENSOR action, got {saved.response_actions}"
     assert gateway.status(poisoned.sensor_id) != "TRUSTED"
 
+    # All 4 feeders are still TRUSTED - the substation is the sole unknown in
+    # SUBSTATION_AGGREGATION, so it reconstructs exactly rather than staying withheld.
+    assert gateway.status(poisoned.sensor_id) == "ESTIMATED"
     resolved_load = gateway.resolve_load(poisoned)
-    assert resolved_load is not None, "optimizer input must not be silently dropped once estimation is enabled"
+    assert resolved_load is not None, "optimizer input must not be silently dropped once estimation succeeds"
     assert resolved_load != poisoned.load, "the manipulated 90 MW reading must never reach the optimizer"
-    assert abs(resolved_load - 50.0) < 5.0, "the estimate should track the true ~50 MW baseline"
+    assert abs(resolved_load - 50.0) < 1e-6, "the reconstruction should exactly match the trusted feeder sum"
 
     dispatch = optimizer.dispatch(resolved_load)
     assert dispatch["generation_mw"] == round(resolved_load, 3)
@@ -111,6 +140,7 @@ def test_escalation_by_correlation_still_executes_containment(tmp_path):
     """
     gateway = TrustedDataGateway()
     manager = IncidentManager(db_path=str(tmp_path / "incident3.db"))
+    _seed_trusted_baseline(gateway, substation_load=50.0)
 
     def _detection(classification: str) -> DetectionResult:
         return DetectionResult(
@@ -144,7 +174,8 @@ def test_escalation_by_correlation_still_executes_containment(tmp_path):
     executed_types = {a.type for a in after_high_risk if a.executed}
     # executed is one-way: INCREASE_MONITORING from the SUSPICIOUS step stays executed,
     # plus the three containment actions HIGH_RISK newly unlocks. RECALCULATE_DISPATCH
-    # is still held - it's CRITICAL-only.
+    # is still held - it's CRITICAL-only. All 4 feeders are untouched by this incident,
+    # so ENABLE_ESTIMATION_FALLBACK succeeds: the substation is the sole unknown.
     assert executed_types == {"INCREASE_MONITORING", "QUARANTINE_SENSOR", "ENABLE_ESTIMATION_FALLBACK", "FREEZE_OPTIMIZATION_INPUT"}, executed_types
     assert gateway.status(SUBSTATION) == "ESTIMATED"
 
@@ -159,14 +190,21 @@ def test_escalation_by_correlation_still_executes_containment(tmp_path):
 
 def test_correlated_new_asset_gets_containment_too(tmp_path):
     """A weak alert on one sensor opens the incident and gets its containment actions
-    proposed only for that sensor's asset. When a real attack on a DIFFERENT asset
-    correlates into the same incident afterward, that asset must also end up covered by
-    containment - not silently left TRUSTED because the original proposal never named
-    it (evaluation/harness.py surfaced this: a pre-attack false positive on one sensor
-    was leaving the real attack's sensor unprotected).
+    proposed only for that sensor's asset. When a real attack on a DIFFERENT asset in
+    the SAME constraint correlates into the same incident afterward, that asset must
+    also end up covered by containment - not silently left TRUSTED because the original
+    proposal never named it (evaluation/harness.py surfaced this: a pre-attack false
+    positive on one sensor was leaving the real attack's sensor unprotected).
+
+    Both sensors here belong to SUBSTATION_AGGREGATION, so once both are compromised
+    the constraint has two unknowns for one equation: genuinely underdetermined. Under
+    THE ONE RULE neither can borrow the other as a trusted source, so "protected" now
+    correctly means QUARANTINED (nothing served) rather than a false ESTIMATED value -
+    the fix this PRD exists for.
     """
     gateway = TrustedDataGateway()
     manager = IncidentManager(db_path=str(tmp_path / "incident4.db"))
+    _seed_trusted_baseline(gateway, substation_load=50.0)
 
     def _detection(sensor_id: str, classification: str) -> DetectionResult:
         return DetectionResult(
@@ -187,6 +225,7 @@ def test_correlated_new_asset_gets_containment_too(tmp_path):
     run_incident(first, manager, gateway)
     assert manager.get(first.incident_id).affected_assets == ["FEEDER-1"]
     assert gateway.status(SUBSTATION) == "TRUSTED"
+    assert gateway.status("FEEDER-1") == "TRUSTED"
 
     # The real attack lands on SUBSTATION and correlates into the same incident.
     second = manager.handle_detection(SUBSTATION, SUBSTATION, _detection(SUBSTATION, "HIGH_RISK"))
@@ -197,7 +236,112 @@ def test_correlated_new_asset_gets_containment_too(tmp_path):
     assert SUBSTATION in saved.affected_assets
     substation_actions = [a for a in saved.response_actions if a.target == SUBSTATION]
     assert {"QUARANTINE_SENSOR", "ENABLE_ESTIMATION_FALLBACK", "FREEZE_OPTIMIZATION_INPUT"} <= {a.type for a in substation_actions}
-    assert all(a.executed for a in substation_actions if a.type in {"QUARANTINE_SENSOR", "ENABLE_ESTIMATION_FALLBACK", "FREEZE_OPTIMIZATION_INPUT"})
-    assert gateway.status(SUBSTATION) == "ESTIMATED", "the real attack's sensor must end up protected, not left TRUSTED"
+    assert all(a.executed for a in substation_actions if a.type == "QUARANTINE_SENSOR")
+    # Neither sensor is left TRUSTED - both are protected - but with two of the
+    # constraint's five members compromised, neither can be reconstructed from the
+    # other, so both terminate QUARANTINED rather than one being falsely ESTIMATED.
+    assert gateway.status(SUBSTATION) == "QUARANTINED"
+    assert gateway.status("FEEDER-1") == "QUARANTINED"
+    assert gateway.resolve_load(make_event(sensor_id=SUBSTATION, load=90.0)) is None
 
     manager.close()
+
+
+def test_coordinated_fdi_reaches_quarantined_state(tmp_path):
+    """Real seeded COORDINATED_FDI run (seed 2047, run_index 5 of the evaluation
+    harness's own scenario/seed scheme) through the actual simulator, detection, and
+    SOC pipeline: the four feeders get shifted together, escalate to HIGH_RISK, and
+    the incident's containment quarantines all of them at once - four unknowns for one
+    equation, the degradation case THE ONE RULE exists for.
+    """
+    run_index = 5
+    seed = settings.RANDOM_SEED + SCENARIO_SEED_OFFSET["COORDINATED_FDI"] + run_index
+    attack = build_attack("COORDINATED_FDI", np.random.default_rng(seed))
+    grid = Grid(seed=seed)
+    risk_engine = RiskEngine()
+    gateway = TrustedDataGateway()
+    manager = IncidentManager(db_path=str(tmp_path / "coordinated.db"))
+
+    reached_high_risk = False
+    for tick in range(TICKS_PER_RUN):
+        readings, _true_load = tick_readings(grid, attack, tick)
+        for raw in readings:
+            event = TelemetryEvent(**raw)
+            detection = risk_engine.evaluate(event)
+            reached_high_risk = reached_high_risk or detection.classification in ("HIGH_RISK", "CRITICAL")
+            if detection.trigger_soc_workflow:
+                incident = manager.handle_detection(event.sensor_id, event.asset_id, detection)
+                if incident is not None:
+                    run_incident(incident, manager, gateway)
+            gateway.record(event)
+    manager.close()
+
+    assert reached_high_risk, "this seed is expected to escalate past SUSPICIOUS"
+    quarantined = [s for s in FEEDERS if gateway.status(s) == "QUARANTINED"]
+    assert quarantined, f"expected at least one terminal QUARANTINED sensor, got {[gateway.status(s) for s in FEEDERS]}"
+
+
+def test_gateway_consumer_handles_none_value(tmp_path):
+    """The value consumer (evaluation.harness._dispatch_substation, the same function
+    the harness and dashboard both drive off) does not crash and does not coerce None
+    into a number when the substation is quarantined with no estimate available.
+    """
+    gateway = TrustedDataGateway()
+    gateway.quarantine(SUBSTATION)  # no feeder baseline recorded - genuinely unobservable
+
+    event = make_event(sensor_id=SUBSTATION, asset_id=SUBSTATION, load=90.0)
+    tracker = _RunTracker(security_enabled=True)
+
+    _dispatch_substation(event, gateway, security_enabled=True, true_load=50.0, tracker=tracker)
+
+    assert tracker.total_cost == 0.0
+    assert tracker.total_emissions == 0.0
+    assert tracker.total_unnecessary_mwh == 0.0
+
+
+def test_escalating_fdi_demo_seed_shows_all_three_states(tmp_path):
+    """Regression check for the dashboard demo (simulator/attacks/escalating_fdi.py):
+    at ESCALATING_FDI_DEMO_SEED, ESCALATING_FDI_SNAPSHOT_TICK is the one frame where
+    TRUSTED, ESTIMATED, and QUARANTINED are all present - the exact capture
+    gateway-states.png relies on. Not every seed produces this; if a future change to
+    detection or the gateway breaks it, this is the test that should catch it.
+    """
+    from simulator.attacks.escalating_fdi import EscalatingFdiAttack
+
+    full_seed = ESCALATING_FDI_DEMO_SEED + SCENARIO_SEED_OFFSET["ESCALATING_FDI"]
+    attack = EscalatingFdiAttack(ATTACK_START_TICK)
+    grid = Grid(seed=full_seed)
+    risk_engine = RiskEngine()
+    gateway = TrustedDataGateway()
+    manager = IncidentManager(db_path=str(tmp_path / "escalating.db"))
+
+    for tick in range(ESCALATING_FDI_SNAPSHOT_TICK + 1):
+        readings, _true_load = tick_readings(grid, attack, tick)
+        for raw in readings:
+            event = TelemetryEvent(**raw)
+            detection = risk_engine.evaluate(event)
+            if detection.trigger_soc_workflow:
+                incident = manager.handle_detection(event.sensor_id, event.asset_id, detection)
+                if incident is not None:
+                    run_incident(incident, manager, gateway)
+            gateway.record(event)
+    manager.close()
+
+    states = {gateway.status(s) for s in (*GENERATORS, *FEEDERS, SUBSTATION, BATTERY)}
+    assert {"TRUSTED", "ESTIMATED", "QUARANTINED"} <= states, states
+    assert gateway.status(GENERATORS[0]) == "QUARANTINED", "the generator has no constraint - never reconstructable"
+    assert gateway.status(SUBSTATION) == "ESTIMATED", "sole unknown in SUBSTATION_AGGREGATION at this tick"
+
+
+def test_escalating_fdi_excluded_from_evaluation():
+    """Hard guardrail (PRD Phase 3.5): ESCALATING_FDI is demonstration-only. SCENARIOS
+    is the only scenario list evaluation.harness's run_harness() iterates, and
+    ab_compare.compare() only ever sees EvaluationRun objects that harness produced from
+    it - so this one assertion structurally guarantees ESCALATING_FDI reaches neither.
+    If a future change ever calls ab_compare.compare() from a second, non-SCENARIOS-
+    driven call site, this test would no longer be sufficient on its own.
+    """
+    from evaluation.harness import SCENARIOS
+
+    assert "ESCALATING_FDI" not in SCENARIOS
+    assert SCENARIOS == ("LOAD_INFLATION", "LOAD_SUPPRESSION", "COORDINATED_FDI")

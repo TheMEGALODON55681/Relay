@@ -105,6 +105,7 @@ def render_gateway_state(on: RunTrace) -> None:
         f"""<div class="rl-gateway-tile" style="border-left-color:{_STATUS_COLOR[status]}">
             <div class="rl-gateway-tile__id">{sensor}</div>
             <div class="rl-gateway-tile__status" style="color:{_STATUS_COLOR[status]}">{status}</div>
+            <div class="rl-gateway-tile__reason">{on.gateway_reasons.get(sensor, "")}</div>
         </div>"""
         for sensor, status in sorted(on.gateway_status.items())
     )
@@ -230,7 +231,54 @@ def render_detection_analytics(on: RunTrace, aggregate: dict | None) -> None:
     cols[1].metric("False-positive rate (aggregate)", f"{det['false_positive_rate']:.2%}")
 
 
-def render_automation_center(on: RunTrace, off: RunTrace) -> None:
+def _worst_dispatch_tick(off: RunTrace) -> dict | None:
+    """The tick where the reported reading deviated furthest from truth - the attack's
+    highest-impact moment, and the clearest single frame for a defense-off/defense-on
+    comparison.
+    """
+    if not off.dispatch_rows:
+        return None
+    return max(off.dispatch_rows, key=lambda r: abs(r["reported_load"] - r["true_load"]))
+
+
+def render_counterfactual(on: RunTrace, off: RunTrace) -> None:
+    """Leads with the outcome - what the optimizer actually dispatched on, defense off
+    versus defense on, at the attack's worst moment - then keeps the aggregate cost,
+    emissions, and unnecessary-generation deltas underneath as supporting evidence.
+    """
+    worst = _worst_dispatch_tick(off)
+    on_at_worst = next((r for r in on.dispatch_rows if worst and r["tick"] == worst["tick"]), None)
+    if worst and on_at_worst and abs(worst["reported_load"] - worst["true_load"]) > 1e-6:
+        off_dispatched = worst["dispatched_load"]
+        on_dispatched = on_at_worst["dispatched_load"]
+        on_label = "withheld" if on_dispatched is None else f"{on_dispatched:.2f} MW"
+        on_note = "the optimizer receives nothing rather than a guess" if on_dispatched is None else "reconstructed from trusted peers, not the poisoned reading"
+        st.markdown(
+            f"""<div class="rl-card">
+                <div class="rl-card__title">The attack's worst moment &middot; tick {worst["tick"]}</div>
+                <div class="rl-counterfactual">
+                    <div class="rl-counterfactual__side">
+                        <div class="rl-counterfactual__label" style="color:{_STATUS_COLOR["QUARANTINED"]}">Defense OFF</div>
+                        <div class="rl-counterfactual__value rl-mono">{off_dispatched:.2f} MW</div>
+                        <div class="rl-counterfactual__note">the optimizer dispatches on the poisoned reading</div>
+                    </div>
+                    <div class="rl-counterfactual__side">
+                        <div class="rl-counterfactual__label" style="color:{_STATUS_COLOR["TRUSTED"]}">Defense ON</div>
+                        <div class="rl-counterfactual__value rl-mono">{on_label}</div>
+                        <div class="rl-counterfactual__note">{on_note}</div>
+                    </div>
+                    <div class="rl-counterfactual__side">
+                        <div class="rl-counterfactual__label">True load</div>
+                        <div class="rl-counterfactual__value rl-mono">{worst["true_load"]:.2f} MW</div>
+                        <div class="rl-counterfactual__note">reported: {worst["reported_load"]:.2f} MW</div>
+                    </div>
+                </div>
+            </div>""",
+            unsafe_allow_html=True,
+        )
+    else:
+        st.caption("No dispatch deviation this run - the reported load matched truth throughout.")
+
     st.caption("Automation mode: deterministic policy engine (config.settings.AUTONOMY_TIERS) - the LLM never sets auto_execute.")
     actions = [(i, a) for i in on.incidents for a in i.response_actions]
     executed = [(i, a) for i, a in actions if a.executed]

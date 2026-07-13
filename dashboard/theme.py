@@ -169,6 +169,32 @@ _CSS = """
     letter-spacing: 0.04em;
     margin-top: 4px;
 }
+.rl-gateway-tile__reason {
+    color: var(--rl-text-muted);
+    font-size: 0.72em;
+    line-height: 1.35;
+    margin-top: 6px;
+}
+
+/* Counterfactual headline: defense off vs defense on at the attack's worst tick */
+.rl-counterfactual { display: flex; gap: 18px; }
+.rl-counterfactual__side { flex: 1; min-width: 0; }
+.rl-counterfactual__label {
+    font-size: 0.72em;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 4px;
+}
+.rl-counterfactual__value {
+    font-size: 1.4em;
+    font-weight: 700;
+}
+.rl-counterfactual__note {
+    color: var(--rl-text-muted);
+    font-size: 0.78em;
+    margin-top: 2px;
+}
 
 /* Status-colored badge, reused across panels */
 .rl-badge {

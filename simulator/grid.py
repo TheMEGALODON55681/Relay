@@ -4,6 +4,8 @@ Not a physics-accurate power-systems model. Realistic enough that the physical
 consistency checks in the detection engine (Phase 2) are meaningful.
 """
 
+from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -21,6 +23,42 @@ SENSOR_KIND = {
     SUBSTATION: "SUBSTATION",
     BATTERY: "BATTERY",
 }
+
+
+@dataclass(frozen=True)
+class Constraint:
+    """A physical relationship the gateway can solve for exactly one unknown member,
+    given every other member's latest trusted reading. See
+    gateway.trusted_data_gateway for the observability rule this supports: one
+    equation solves for one unknown, two or more unknowns is unobservable.
+    """
+
+    name: str
+    members: tuple[str, ...]
+    solve: Callable[[str, dict[str, float]], float]
+
+
+def _solve_substation_aggregation(target: str, known: dict[str, float]) -> float:
+    """sub = sum(feeders), the same relationship detection.physics_validator's
+    SUBSTATION_AGGREGATION check verifies. known holds every constraint member
+    except target, keyed by sensor_id.
+    """
+    if target == SUBSTATION:
+        return sum(known[f] for f in FEEDERS)
+    return known[SUBSTATION] - sum(v for sensor_id, v in known.items() if sensor_id != SUBSTATION)
+
+
+# One constraint today. A second one (e.g. a power-balance reconstruction across
+# generators and the battery) can be added by appending another Constraint here;
+# gateway.trusted_data_gateway consumes this list generically.
+CONSTRAINTS: list[Constraint] = [
+    Constraint(name="SUBSTATION_AGGREGATION", members=(SUBSTATION, *FEEDERS), solve=_solve_substation_aggregation),
+]
+
+CONSTRAINTS_BY_SENSOR: dict[str, list[Constraint]] = defaultdict(list)
+for _constraint in CONSTRAINTS:
+    for _member in _constraint.members:
+        CONSTRAINTS_BY_SENSOR[_member].append(_constraint)
 
 NOMINAL_VOLTAGE = 230.0
 NOMINAL_FREQUENCY = 50.0

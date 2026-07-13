@@ -15,7 +15,7 @@ from evaluation.harness import SCENARIO_SEED_OFFSET, TICKS_PER_RUN, build_attack
 from gateway.trusted_data_gateway import TrustedDataGateway
 from optimization import optimizer
 from schemas.models import AgentDecision, Incident, TelemetryEvent
-from simulator.grid import FEEDERS, SUBSTATION, Grid
+from simulator.grid import SENSOR_KIND, SUBSTATION, Grid
 from soc.incident_manager import IncidentManager
 from soc.orchestrator import run_incident
 
@@ -31,6 +31,7 @@ class RunTrace:
     incidents: list[Incident] = field(default_factory=list)
     decisions: list[AgentDecision] = field(default_factory=list)
     gateway_status: dict[str, str] = field(default_factory=dict)
+    gateway_reasons: dict[str, str] = field(default_factory=dict)
     total_cost: float = 0.0
     total_emissions: float = 0.0
     total_unnecessary_mwh: float = 0.0
@@ -56,11 +57,15 @@ def _process_sensor(event: TelemetryEvent, true_load: float, risk_engine: RiskEn
         if incident is not None:
             trace.decisions.extend(run_incident(incident, manager, gateway))
 
+    if trace.security_enabled:
+        # Every sensor's latest trusted reading, not just the substation's -
+        # constraint reconstruction needs a feeder's own last-known-good value to
+        # solve for a different feeder.
+        gateway.record(event)
+
     if event.sensor_id != SUBSTATION:
         return
     dispatched_load = gateway.resolve_load(event) if trace.security_enabled else event.load
-    if trace.security_enabled:
-        gateway.record(event)
     cost = emissions = None
     if dispatched_load is not None:
         dispatch = optimizer.dispatch(dispatched_load)
@@ -72,10 +77,16 @@ def _process_sensor(event: TelemetryEvent, true_load: float, risk_engine: RiskEn
     trace.dispatch_rows.append({"tick": tick, "true_load": true_load, "reported_load": event.load, "dispatched_load": dispatched_load, "cost": cost, "emissions": emissions})
 
 
-def run_live(scenario: str, security_enabled: bool, seed: int = settings.RANDOM_SEED) -> RunTrace:
-    """Runs `scenario` once (LOAD_INFLATION, LOAD_SUPPRESSION, or COORDINATED_FDI) with
-    the same seed, tick count, and attack calibration the evaluation harness uses, so a
-    dashboard run and a harness run of the same scenario are directly comparable.
+def run_live(scenario: str, security_enabled: bool, seed: int = settings.RANDOM_SEED, snapshot_tick: int | None = None) -> RunTrace:
+    """Runs `scenario` once (LOAD_INFLATION, LOAD_SUPPRESSION, COORDINATED_FDI, or the
+    demonstration-only ESCALATING_FDI) with the same seed, tick count, and attack
+    calibration the evaluation harness uses, so a dashboard run and a harness run of
+    the same scenario are directly comparable.
+
+    snapshot_tick freezes the reported gateway status/reason at that tick instead of
+    the run's final tick - ESCALATING_FDI's interesting moment (all three trust states
+    at once) is transient and would otherwise be overwritten by the later stages that
+    degrade it further.
     """
     full_seed = seed + SCENARIO_SEED_OFFSET[scenario]
     attack = build_attack(scenario, np.random.default_rng(full_seed))
@@ -84,15 +95,20 @@ def run_live(scenario: str, security_enabled: bool, seed: int = settings.RANDOM_
     gateway = TrustedDataGateway()
     manager = IncidentManager(db_path=":memory:")
     trace = RunTrace(scenario=scenario, security_enabled=security_enabled)
+    snapshot: dict[str, tuple] | None = None
 
     for tick in range(TICKS_PER_RUN):
         readings, true_load = tick_readings(grid, attack, tick)
         for raw in readings:
             _process_sensor(TelemetryEvent(**raw), true_load, risk_engine, manager, gateway, tick, trace)
+        if tick == snapshot_tick:
+            snapshot = {s: gateway.status_of(s) for s in SENSOR_KIND}
 
     incident_ids = {d.incident_id for d in trace.decisions}
     trace.incidents = [manager.get(i) for i in incident_ids]
-    trace.gateway_status = {s: gateway.status(s) for s in (SUBSTATION, *FEEDERS)}
+    final = snapshot if snapshot is not None else {s: gateway.status_of(s) for s in SENSOR_KIND}
+    trace.gateway_status = {s: state.value for s, (state, _reason) in final.items()}
+    trace.gateway_reasons = {s: reason for s, (_state, reason) in final.items()}
     trace.total_cost = round(trace.total_cost, 4)
     trace.total_emissions = round(trace.total_emissions, 5)
     trace.total_unnecessary_mwh = round(trace.total_unnecessary_mwh, 6)

@@ -8,3 +8,4 @@ streamlit
 python-dotenv
 pytest
 ruff
+playwright

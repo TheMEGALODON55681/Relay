@@ -21,6 +21,7 @@ from optimization import optimizer
 from schemas.models import EvaluationRun, TelemetryEvent
 from simulator.attacks.base import Attack
 from simulator.attacks.coordinated_fdi import CoordinatedFdiAttack
+from simulator.attacks.escalating_fdi import EscalatingFdiAttack
 from simulator.attacks.load_inflation import LoadInflationAttack
 from simulator.attacks.load_suppression import LoadSuppressionAttack
 from simulator.grid import FEEDERS, SUBSTATION, Grid
@@ -33,8 +34,22 @@ TICKS_PER_RUN = 50
 # unstable, sample-starved rolling std, not genuine detector noise.
 ATTACK_START_TICK = settings.ROLLING_WINDOW_TICKS + 5
 TICK_HOURS = settings.TICK_SECONDS / 3600
+# Scored scenarios only - the evaluation harness and ab_compare iterate exactly this
+# tuple. ESCALATING_FDI (below) is demonstration-only and deliberately absent: it
+# exists for the dashboard, never for a metric.
 SCENARIOS = ("LOAD_INFLATION", "LOAD_SUPPRESSION", "COORDINATED_FDI")
-SCENARIO_SEED_OFFSET = {"LOAD_INFLATION": 0, "LOAD_SUPPRESSION": 1000, "COORDINATED_FDI": 2000, "BASELINE": 3000}
+SCENARIO_SEED_OFFSET = {"LOAD_INFLATION": 0, "LOAD_SUPPRESSION": 1000, "COORDINATED_FDI": 2000, "BASELINE": 3000, "ESCALATING_FDI": 4000}
+# EscalatingFdiAttack compromises the generator and the first feeder together right at
+# onset; that first tick is the one where all three trust states are reliably on screen
+# at once, before correlated evidence from the ongoing attack broadens containment to
+# other sensors. See simulator/attacks/escalating_fdi.py's module docstring.
+ESCALATING_FDI_SNAPSHOT_TICK = ATTACK_START_TICK
+# Seed 19 is verified (see test_escalating_fdi_demo_seed_shows_all_three_states in
+# tests/test_incident_integration.py) to produce the clean three-state frame at
+# ESCALATING_FDI_SNAPSHOT_TICK; not every seed does, because the same detection evidence
+# that flags the generator can also - depending on grid noise - implicate the feeder
+# before it gets a chance to be reconstructed.
+ESCALATING_FDI_DEMO_SEED = 19
 
 
 class _NoAttack(Attack):
@@ -49,6 +64,8 @@ def build_attack(scenario: str, rng: np.random.Generator) -> Attack:
         return LoadInflationAttack(SUBSTATION, ATTACK_START_TICK, multiplier=float(rng.uniform(1.35, 1.75)))
     if scenario == "LOAD_SUPPRESSION":
         return LoadSuppressionAttack(SUBSTATION, ATTACK_START_TICK, multiplier=float(rng.uniform(0.45, 0.75)))
+    if scenario == "ESCALATING_FDI":
+        return EscalatingFdiAttack(ATTACK_START_TICK)
     # Signs fixed (3 feeders over-report, 1 under-reports - matching the verified
     # PRD Section 6 example), only magnitudes randomized. Independent random signs per
     # feeder can cancel out to a near-zero net aggregate mismatch, which is individually
@@ -137,8 +154,6 @@ def _handle_alert(event: TelemetryEvent, detection, manager: IncidentManager, ga
 
 def _dispatch_substation(event: TelemetryEvent, gateway: TrustedDataGateway | None, security_enabled: bool, true_load: float, tracker: _RunTracker) -> None:
     dispatched_load = gateway.resolve_load(event) if security_enabled else event.load
-    if security_enabled:
-        gateway.record(event)
     tracker.note_dispatch(dispatched_load, true_load)
 
 
@@ -157,6 +172,11 @@ def _simulate(attack: Attack, grid_seed: int, security_enabled: bool) -> _RunTra
             tracker.note_detection(tick, detection.trigger_soc_workflow)
             if detection.trigger_soc_workflow and security_enabled:
                 _handle_alert(event, detection, manager, gateway, tick, tracker)
+            if security_enabled:
+                # Every sensor's latest trusted reading, not just the substation's -
+                # constraint reconstruction (gateway.trusted_data_gateway) needs a
+                # feeder's own last-known-good value to solve for a different feeder.
+                gateway.record(event)
             if event.sensor_id == SUBSTATION:
                 _dispatch_substation(event, gateway, security_enabled, true_load, tracker)
 

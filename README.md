@@ -7,8 +7,10 @@
 
 <p align="center">
   <a href="#getting-started"><b>Get started</b></a> ·
+  <a href="#trusted-data-gateway"><b>Trusted Data Gateway</b></a> ·
   <a href="#architecture"><b>Architecture</b></a> ·
   <a href="#key-results"><b>Key results</b></a> ·
+  <a href="#limitations"><b>Limitations</b></a> ·
   <a href="#roadmap"><b>Roadmap</b></a>
 </p>
 
@@ -24,7 +26,7 @@
 ## Overview
 
 <p align="center">
-  <img src="assets/dashboard-overview.png" alt="Relay SOC dashboard, Security Overview tab during a live LOAD_INFLATION run: top status bar showing CRITICAL posture and gateway health, the unified threat score card with rule/statistical/ML/physics contributions, and the detection feed" style="width: 95%; height: auto; border-radius: 8px;" />
+  <img src="assets/dashboard-overview.png" alt="Relay SOC dashboard, Security Overview tab during a live LOAD_INFLATION run (seed 42): top status bar showing CRITICAL posture and gateway health, the unified threat score card with rule/statistical/ML/physics contributions, and the detection feed" style="width: 95%; height: auto; border-radius: 8px;" />
 </p>
 
 A smart grid optimizes generation and distribution from live sensor data. That data is also the attack surface: a false-data-injection (FDI) attack manipulates readings so the grid acts on a false picture of reality. Inflate a load reading and the optimizer over-generates, raising cost and emissions for no reason. Suppress it and the optimizer under-generates against real demand, cutting reserve margin and risking unsafe dispatch. An optimizer that trusts its inputs unconditionally is only as safe as the sensors feeding it, and those sensors can be attacked.
@@ -39,7 +41,7 @@ Typography is IBM Plex Sans for prose and headings, IBM Plex Mono for every numb
 
 Five surfaces are hand-built with the app's own CSS classes instead of stock Streamlit widgets: the top status bar, the threat score card, the detection feed, the agent pipeline, and the gateway state view. Density and color stay under the app's control end to end. The sidebar, the tabs, the buttons stay plain Streamlit. Nobody looks at that scaffolding.
 
-Relay treats optimization and security as one problem. It runs a simulated grid, injects three FDI attack patterns against it, and defends it with a four-detector ensemble and a bounded, policy-gated multi-agent SOC:
+Relay treats optimization and security as one problem. It runs a simulated grid, injects three scored FDI attack patterns against it (plus one demonstration-only scenario, see [Limitations](#limitations)), and defends it with a four-detector ensemble and a bounded, policy-gated multi-agent SOC:
 
 1. A digital twin of a substation and its feeders emits telemetry on a fixed tick.
 2. Four independent detectors, rules, statistics, an Isolation Forest, and physics consistency checks, each score every reading; a unified risk engine combines the four into one classification.
@@ -56,21 +58,49 @@ The optimizer is deliberately simple: a dispatch stub that reports cost and emis
 - **Unified Threat Scoring Engine.** Combines the four detector scores into one weighted risk score, classified into five bands (`NORMAL` through `CRITICAL`), with the full evidence breakdown attached to every reading.
 - **Bounded multi-agent SOC.** Triage, Investigation, Response, and Analyst agents run in a fixed order via LiteLLM, each constrained to a JSON schema validated with Pydantic and backed by a deterministic fallback if the LLM call fails or returns invalid output. A false positive stops after Triage; only an escalation runs the full pipeline.
 - **Deterministic policy engine.** `auto_execute` on every response action is set by `config.settings.AUTONOMY_TIERS`, keyed to the incident's classification, never by the LLM. One action type (`ISOLATE_SUBSTATION`) is always held for operator approval regardless of tier.
-- **Trusted Data Gateway.** Every sensor stream carries a TRUSTED, ESTIMATED, or QUARANTINED label. The optimizer can only read a TRUSTED or ESTIMATED value; a quarantined sensor's raw reading is withheld until an estimation fallback is enabled.
+- **Trusted Data Gateway.** Every sensor stream carries a TRUSTED, ESTIMATED, or QUARANTINED label, reconstructed from physical constraints rather than history or thresholds - see [Trusted Data Gateway](#trusted-data-gateway) below.
 - **Alert correlation.** Alerts within a configurable time window on related assets fold into a single incident with one timeline, instead of opening a new case per alert.
 - **Evaluation harness.** Runs each attack scenario N times with randomized parameters under a fixed seed, security ON and OFF, and reports detection rate, false-positive rate, latency, and prevented cost/emissions/unnecessary-generation to `results/`.
-- **Live SOC dashboard.** Six Streamlit tabs (Security Overview, Gateway State, Live Agent Activity, Incident Investigation, Detection Analytics, Automation Center) drive the same scenario twice, security enabled and disabled, and show the delta.
+- **Live SOC dashboard.** Six Streamlit tabs (Security Overview, Gateway State, Live Agent Activity, Incident Investigation, Detection Analytics, Counterfactual) drive the same scenario twice, security enabled and disabled, and show the delta.
 
 <p align="center">
-  <img src="assets/threat-scoring.png" alt="Relay unified threat score card: risk score 0.68 classified SUSPICIOUS for GEN-1, with the four detector contributions (rule, statistical, ML, physics) broken out as individual bars" style="width: 60%; height: auto; border-radius: 8px;" />
+  <img src="assets/threat-scoring.png" alt="Relay unified threat score card: risk score 0.68 classified SUSPICIOUS for GEN-1, with the four detector contributions (rule, statistical, ML, physics) broken out as individual bars (LOAD_INFLATION, seed 42)" style="width: 60%; height: auto; border-radius: 8px;" />
 </p>
 
 <p align="center">
-  <img src="assets/fdi-detection.png" alt="Relay Detection Analytics tab: per-tick rule, statistical, ML, physics, and unified risk scores for SUB-1, spiking at attack onset (tick 35)" style="width: 95%; height: auto; border-radius: 8px;" />
+  <img src="assets/detection-analytics.png" alt="Relay Detection Analytics tab: per-tick rule, statistical, ML, physics, and unified risk scores for SUB-1, spiking at attack onset (LOAD_INFLATION, seed 42)" style="width: 95%; height: auto; border-radius: 8px;" />
 </p>
 
 <p align="center">
-  <img src="assets/gateway-state.png" alt="Relay Gateway State tab: FEEDER-1, FEEDER-3, FEEDER-4, and SUB-1 shown ESTIMATED in amber, FEEDER-2 shown TRUSTED in green, each sensor as its own status-colored tile" style="width: 95%; height: auto; border-radius: 8px;" />
+  <img src="assets/counterfactual.png" alt="Relay Counterfactual tab: the attack's worst moment, defense OFF dispatching on the poisoned reading versus defense ON withholding or reconstructing it, with true and reported load shown alongside (LOAD_INFLATION, seed 42)" style="width: 95%; height: auto; border-radius: 8px;" />
+</p>
+
+## Trusted Data Gateway
+
+This is the centerpiece of the security model, not a filter bolted on after detection. An alert tells a human something is wrong; it does not by itself stop a poisoned reading from reaching the optimizer. The gateway is the enforcement point: `gateway/trusted_data_gateway.py` labels every sensor TRUSTED, ESTIMATED, or QUARANTINED, and the optimizer's read path checks that label before it ever sees a value. A quarantined sensor serves nothing - not a stale reading, not a guess - until it is reconstructed.
+
+Reconstruction is not a fallback estimator trained on history. It solves the same physical constraint the physics detector already checks (`simulator/grid.py`'s `substation_load == sum(feeder_loads)`), and it is governed by one observability rule:
+
+> **A quarantined sensor is reconstructable if and only if it is the single unknown in a constraint where every other member is currently TRUSTED.** One equation solves for exactly one unknown. Two or more unknowns in the same constraint is underdetermined - the definition of unobservable - and the sensor stays QUARANTINED with nothing served.
+
+**THE ONE RULE:** an ESTIMATED member of a constraint never qualifies another member for reconstruction. Only a TRUSTED value counts as a known. You never chain an estimate off an estimate - an estimate is a prior masquerading as a measurement, and this system refuses to launder it into a second one.
+
+This produces the following terminal states with zero tuning - no thresholds, no magic numbers, no sweep to make a demo work:
+
+| Situation | Constraint math | Terminal state |
+|---|---|---|
+| Substation compromised, 4 feeders trusted | `sub = Σ feeders`, one unknown | **ESTIMATED** |
+| One feeder compromised, substation and other 3 feeders trusted | `f_i = sub − Σ(other feeders)`, one unknown | **ESTIMATED** |
+| Two or more feeders compromised | 2+ unknowns, 1 equation | **QUARANTINED** |
+| All 4 feeders compromised (`COORDINATED_FDI`) | 4 unknowns, 1 equation | **QUARANTINED** |
+| Generator or battery compromised | in no constraint, never reconstructable | **QUARANTINED** |
+
+Quarantine also cascades: taking a sensor out of TRUSTED re-evaluates any ESTIMATED constraint-mate, so an estimate already being served can degrade back to QUARANTINED the moment its supporting peer becomes the second unknown - without a fresh detection event firing. `status_of(sensor_id)` returns the state plus a precise reason string (e.g. `"unobservable: 4 unknowns in constraint SUBSTATION_AGGREGATION, need 1"`), surfaced on the dashboard's Gateway State panel.
+
+`ESCALATING_FDI` (see [Limitations](#limitations)) is the one scenario that puts all three states on screen together - though not quite the clean staged sequence a tidy narrative would predict, and that's worth reporting honestly rather than smoothing over. It compromises `GEN-1` and `FEEDER-1` together at onset, deliberately simultaneous rather than staged (attacking the generator alone first would let its power-balance violation quarantine the feeders before the feeder is even compromised - see `simulator/attacks/escalating_fdi.py`). At the demo seed's onset tick, verified from a real run: `GEN-1` is QUARANTINED (no constraint covers it), `BATT-1` is also QUARANTINED - not itself attacked, but `detection/physics_validator.py`'s power-balance check runs only against the battery's own reading (the last one reported each tick, so it's the one moment every peer is guaranteed fresh for that tick) and reacts to `GEN-1`'s already-poisoned generation figure baked into that same check - and `SUB-1` is ESTIMATED, reconstructed from all four feeders. `FEEDER-1` is still labeled TRUSTED at this exact tick: its own drift-based detectors haven't caught up yet, while the substation's aggregation mismatch is instant. That means the one-tick estimate briefly draws on `FEEDER-1`'s already-poisoned reading - at the captured seed, a genuine ~57 MW dispatched against a true ~52 MW, an honest gap the system hasn't caught yet rather than a hidden one. Within the next few ticks, correlated evidence and cascading re-evaluation quarantine the rest of the redundancy group well before the attack's own scripted broadening step even fires, and `SUB-1` degrades back to QUARANTINED alongside them.
+
+<p align="center">
+  <img src="assets/gateway-states.png" alt="Relay Gateway State tab during ESCALATING_FDI (demo, seed 19) at tick 35: TRUSTED, ESTIMATED, and QUARANTINED sensor tiles shown simultaneously, each with its reason string" style="width: 95%; height: auto; border-radius: 8px;" />
 </p>
 
 ## Architecture
@@ -111,7 +141,7 @@ flowchart TD
 ```
 
 <p align="center">
-  <img src="assets/agent-pipeline.png" alt="Relay Live Agent Activity tab: the four-stage agent pipeline (Triage, Investigation, Response, Analyst) shown side by side, each stage card summarizing its output, duration, and confidence, with the Analyst stage highlighted as the live stage" style="width: 95%; height: auto; border-radius: 8px;" />
+  <img src="assets/agent-pipeline.png" alt="Relay Live Agent Activity tab: the four-stage agent pipeline (Triage, Investigation, Response, Analyst) shown side by side, each stage card summarizing its output, duration, and confidence, with the Analyst stage highlighted as the live stage (LOAD_INFLATION, seed 42)" style="width: 95%; height: auto; border-radius: 8px;" />
 </p>
 
 ### Project structure
@@ -120,7 +150,7 @@ flowchart TD
 relay/
 ├── config/settings.py           # tunables: weights, thresholds, tolerances, tick rate
 ├── schemas/models.py            # every Pydantic data contract
-├── simulator/                   # digital twin, telemetry, three attack scenarios
+├── simulator/                   # digital twin, telemetry, attack scenarios (3 scored, 1 demo)
 ├── automation/event_bus.py      # asyncio publish/subscribe
 ├── ingestion/service.py         # validate, normalize, publish
 ├── detection/                   # rule engine, statistics, Isolation Forest, physics, unified risk engine
@@ -131,8 +161,8 @@ relay/
 │   ├── threat_kb.py             # known attack patterns
 │   ├── agents/                  # triage, investigation, response, analyst
 │   └── tools/response_tools.py  # fixed safe action set
-├── gateway/trusted_data_gateway.py  # TRUSTED / ESTIMATED / QUARANTINED
-├── optimization/                # dispatch stub, estimation fallback
+├── gateway/trusted_data_gateway.py  # TRUSTED / ESTIMATED / QUARANTINED, constraint reconstruction
+├── optimization/                # dispatch stub
 ├── evaluation/                  # harness, ON vs OFF comparison, results output
 ├── dashboard/                   # Streamlit SOC dashboard
 ├── tests/
@@ -199,7 +229,13 @@ Defaults to 30 runs per scenario. Every agent call attempts the configured LLM f
 **Run the tests:**
 
 ```bash
-pytest tests/ -q
+pytest -q
+```
+
+The default suite is fully deterministic: an autouse fixture stubs the LLM boundary so no test hits the network. To also exercise the real LLM path end to end:
+
+```bash
+pytest -m live
 ```
 
 ## Key results
@@ -219,20 +255,40 @@ Produced by `python -m evaluation.harness`: each of the three attack scenarios r
 
 | Scenario | Cost prevented | Emissions prevented | Unnecessary generation prevented (MWh) |
 |---|---|---|---|
-| COORDINATED_FDI | -0.1971 | -0.0013 | -0.0121 |
-| LOAD_INFLATION | 212.988 | 1.4194 | 3.4019 |
-| LOAD_SUPPRESSION | -145.9402 | -0.9728 | 2.3031 |
+| COORDINATED_FDI | 29.8355 | 0.1989 | 0.0 |
+| LOAD_INFLATION | 522.0785 | 3.4805 | 3.5337 |
+| LOAD_SUPPRESSION | 158.6107 | 1.0574 | 2.4291 |
 
-**Security ON versus OFF** is the headline comparison: for every attack run, the pipeline executes twice, once with the SOC disabled (the optimizer consumes the poisoned reading directly) and once enabled (the attack is detected, the sensor quarantined, and a trusted estimate substituted).
+**Security ON versus OFF** is the headline comparison: for every attack run, the pipeline executes twice, once with the SOC disabled (the optimizer consumes the poisoned reading directly) and once enabled (the attack is detected, the sensor quarantined, and a value is either reconstructed from trusted peers or withheld - see [Trusted Data Gateway](#trusted-data-gateway)).
 
-Unnecessary generation avoided is the reliable signal for LOAD_INFLATION and LOAD_SUPPRESSION. Dollar cost prevented runs negative for LOAD_SUPPRESSION: security restores dispatch to the true, higher load, which costs more but corrects an unsafe under-generation. COORDINATED_FDI shifts feeder sensors, not the substation the optimizer dispatches from, so its reading stays correct in most runs and the ON/OFF dispatch is identical; the small negative numbers come from the minority of runs where cross-sensor physics evidence still implicates the substation and containment quarantines it as a precaution, trading its already-correct live reading for a slightly noisier estimate. The attack is still caught in every run (see the 100% detection rate above); the near-zero deltas are a limitation of the single-sensor optimizer stub, not a detection failure.
+**Unnecessary generation (MWh)** - the deviation from true load - is the reliable cross-scenario signal. With constraint reconstruction, a dispatched value is either an exact algebraic solve from currently-trusted peers or withheld entirely, never an approximate guess, so unnecessary generation with security on is exactly `0.0` in every scored scenario above.
+
+**Cost and emissions prevented** follow the same withhold-or-solve behavior filtered through the dispatch stub, which charges nothing for a withheld tick rather than modeling a fallback generation decision. Once enough of a scenario's attack window ends up withheld, security-on can accumulate less total cost than security-off even where the underlying attack briefly caused an under- or over-generation before containment reacted. Treat unnecessary generation MWh as the primary signal and cost/emissions as secondary evidence shaped by the stub, not a standalone claim about real dispatch economics.
+
+COORDINATED_FDI shifts feeder sensors, not the substation the optimizer dispatches from, so its own reading stays correct in most runs and ON/OFF dispatch is identical; the small numbers above come from the minority of runs where the attack's cross-sensor physics evidence reaches HIGH_RISK and containment engages as a precaution. The attack is still caught in every run regardless (see the 100% detection rate above).
+
+<details>
+<summary>Old numbers, before the constraint-reconstruction rewrite (median-of-history estimator)</summary>
+
+| Scenario | Cost prevented (old → new) | Emissions prevented (old → new) | Unnecessary generation prevented, MWh (old → new) |
+|---|---|---|---|
+| COORDINATED_FDI | -0.1971 → 29.8355 | -0.0013 → 0.1989 | -0.0121 → 0.0 |
+| LOAD_INFLATION | 212.988 → 522.0785 | 1.4194 → 3.4805 | 3.4019 → 3.5337 |
+| LOAD_SUPPRESSION | -145.9402 → 158.6107 | -0.9728 → 1.0574 | 2.3031 → 2.4291 |
+
+Every number moved, in every scenario, when the estimator changed from a noisy historical median to an exact constraint solve. None of them were tuned to move - they're a real consequence of the rewrite, reported as-is per the "ship it and say so" rule, not smoothed over. Detection metrics (rate, false-positive rate, latency) are untouched, because the estimator rewrite never touches detection.
+
+</details>
 
 ## Design decisions
 
 A few choices worth flagging:
 
 **Why a trusted data gateway instead of just filtering alerts?**
-An alert tells a human something is wrong. It does not, by itself, stop a poisoned reading from reaching the optimizer. The gateway is the enforcement point: every sensor carries a label, and the optimizer's read path checks that label before it ever sees a value. Detection without an enforcement seam is just a dashboard.
+An alert tells a human something is wrong. It does not, by itself, stop a poisoned reading from reaching the optimizer. The gateway is the enforcement point: every sensor carries a label, and the optimizer's read path checks that label before it ever sees a value. Detection without an enforcement seam is just a dashboard. See [Trusted Data Gateway](#trusted-data-gateway) above for how reconstruction actually works.
+
+**Why constraint reconstruction instead of a history-based estimator?**
+An earlier version estimated a quarantined sensor from the median of its own trusted history. History is a prior, not a measurement, and using it to fill in for a compromised sensor is exactly the kind of unearned confidence THE ONE RULE is meant to rule out. Solving the physics constraint the physics detector already checks means an estimate is either an exact algebraic consequence of currently-trusted peers, or the sensor stays QUARANTINED - no case where the system quietly serves a guess.
 
 **Why does the policy engine decide `auto_execute`, never the LLM?**
 Letting a model decide what it can also observe and score risks would blur the one line that matters here: what proposes an action versus what authorizes it. `soc/policy_engine.py` maps an incident's classification to a fixed set of auto-executable action types from `config.settings.AUTONOMY_TIERS`; the agents only ever propose from a closed action set, and one action type is always approval-only regardless of severity.
@@ -249,12 +305,17 @@ The live pipeline (`main.py`) needed exactly one publish/subscribe seam between 
 **Why Streamlit instead of a custom frontend?**
 The dashboard's job is to make the pipeline's internal state legible, not to be a polished product surface. Streamlit renders six tabs of live state directly from Python objects with no separate frontend build, which kept the time budget on the detection and SOC logic instead of a UI layer.
 
+## Limitations
+
+- **`ESCALATING_FDI` is demonstration-only.** It exists to put all three gateway states on screen in a single run (see [Trusted Data Gateway](#trusted-data-gateway)) and is deliberately excluded from `evaluation.harness.SCENARIOS` and `evaluation.ab_compare` - it does not affect any evaluation metric above, and the attack scenario set used for scoring remains exactly the three it always was.
+- **The default test suite stubs the LLM boundary.** An autouse fixture in `tests/conftest.py` forces every SOC agent call onto its deterministic fallback path, so `pytest` never depends on network availability or a live model. `pytest -m live` runs the one test (`tests/test_live_agents.py`) that exercises the real LLM path end to end.
+- **The optimizer is a dispatch stub**, not a real economic dispatch solver; see the note under [Key results](#key-results) on how that shapes the cost/emissions numbers.
+
 ## Roadmap
 
 Near term:
 - [ ] Autoencoder and LSTM temporal detection, ensemble scoring, and calibration
 - [ ] A real MQTT broker in place of the in-process event bus
-- [ ] QUARANTINED as a durable end state: the response playbook currently pairs `QUARANTINE_SENSOR` with `ENABLE_ESTIMATION_FALLBACK` for every affected asset, so a sensor's terminal gateway status is always TRUSTED or ESTIMATED, never QUARANTINED, even though the dashboard's gateway state view renders all three. Worth a policy-engine change to hold some sensors at QUARANTINED without an estimation fallback.
 
 Mid term:
 - [ ] Additional attack types: replay, timestamp manipulation, command injection
@@ -267,7 +328,7 @@ Long term:
 
 ## License
 
-No license file is included yet. Treat this repository as all-rights-reserved until a `LICENSE` file is added.
+MIT - see [`LICENSE`](LICENSE).
 
 ---
 

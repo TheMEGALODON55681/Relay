@@ -1,9 +1,24 @@
 """Pydantic v2 data contracts. Every boundary in the system exchanges these types."""
 
 from datetime import datetime
+from enum import Enum
 from typing import Literal
 
 from pydantic import BaseModel
+
+
+class SensorState(str, Enum):
+    TRUSTED = "TRUSTED"
+    ESTIMATED = "ESTIMATED"
+    QUARANTINED = "QUARANTINED"
+
+
+class EstimationResult(BaseModel):
+    success: bool
+    state: SensorState
+    estimate: float | None
+    confidence: float | None
+    reason: str
 
 
 class TelemetryEvent(BaseModel):

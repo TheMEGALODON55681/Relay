@@ -7,37 +7,37 @@
   },
   "impact_prevented": {
     "COORDINATED_FDI": {
-      "dispatch_cost_on": 1249.3028,
+      "dispatch_cost_on": 1219.2702,
       "dispatch_cost_off": 1249.1057,
-      "dispatch_cost_prevented": -0.1971,
-      "dispatch_emissions_on": 8.3287,
+      "dispatch_cost_prevented": 29.8355,
+      "dispatch_emissions_on": 8.1285,
       "dispatch_emissions_off": 8.3274,
-      "dispatch_emissions_prevented": -0.0013,
-      "unnecessary_generation_mwh_on": 0.0121,
+      "dispatch_emissions_prevented": 0.1989,
+      "unnecessary_generation_mwh_on": 0.0,
       "unnecessary_generation_mwh_off": 0.0,
-      "unnecessary_generation_mwh_prevented": -0.0121
+      "unnecessary_generation_mwh_prevented": 0.0
     },
     "LOAD_INFLATION": {
-      "dispatch_cost_on": 1249.7785,
+      "dispatch_cost_on": 940.688,
       "dispatch_cost_off": 1462.7665,
-      "dispatch_cost_prevented": 212.988,
-      "dispatch_emissions_on": 8.3326,
+      "dispatch_cost_prevented": 522.0785,
+      "dispatch_emissions_on": 6.2715,
       "dispatch_emissions_off": 9.7521,
-      "dispatch_emissions_prevented": 1.4194,
-      "unnecessary_generation_mwh_on": 0.1317,
+      "dispatch_emissions_prevented": 3.4805,
+      "unnecessary_generation_mwh_on": 0.0,
       "unnecessary_generation_mwh_off": 3.5337,
-      "unnecessary_generation_mwh_prevented": 3.4019
+      "unnecessary_generation_mwh_prevented": 3.5337
     },
     "LOAD_SUPPRESSION": {
-      "dispatch_cost_on": 1250.0582,
+      "dispatch_cost_on": 945.5073,
       "dispatch_cost_off": 1104.118,
-      "dispatch_cost_prevented": -145.9402,
-      "dispatch_emissions_on": 8.3337,
+      "dispatch_cost_prevented": 158.6107,
+      "dispatch_emissions_on": 6.3035,
       "dispatch_emissions_off": 7.3609,
-      "dispatch_emissions_prevented": -0.9728,
-      "unnecessary_generation_mwh_on": 0.1261,
+      "dispatch_emissions_prevented": 1.0574,
+      "unnecessary_generation_mwh_on": 0.0,
       "unnecessary_generation_mwh_off": 2.4291,
-      "unnecessary_generation_mwh_prevented": 2.3031
+      "unnecessary_generation_mwh_prevented": 2.4291
     }
   }
 }

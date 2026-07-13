@@ -2,11 +2,30 @@
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from config import settings
 from detection.sensor_history import DetectionContext
 from schemas.models import TelemetryEvent
+from soc.agents import base as agent_base
 
 BASE_TIME = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_agents(request, monkeypatch):
+    """Every soc.agents.*.run() call goes through soc.agents.base.call_agent, which
+    tries a live LLM call before retrying once and falling back to a deterministic
+    default. Stubbing the LLM boundary here keeps the default suite network-free and
+    reproducible. Tests marked @pytest.mark.live opt out to exercise the real path.
+    """
+    if "live" in request.keywords:
+        return
+
+    def _no_network(*_args, **_kwargs):
+        raise RuntimeError("live LLM calls are disabled in the default test suite; see pytest.ini's 'live' marker")
+
+    monkeypatch.setattr(agent_base, "_call_llm", _no_network)
 
 
 def make_event(sensor_id: str = "FEEDER-1", asset_id: str | None = None, tick: int = 0, **overrides) -> TelemetryEvent:

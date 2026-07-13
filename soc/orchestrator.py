@@ -58,9 +58,7 @@ def _propose_for_new_assets(incident: Incident) -> list[ResponseAction]:
 def _reapply_policy_for_correlation(incident: Incident, manager: IncidentManager, gateway: TrustedDataGateway) -> None:
     incident.response_actions += _propose_for_new_assets(incident)
     actions = policy_engine.apply(incident, incident.response_actions)
-    for action in actions:
-        if action.auto_execute and not action.executed:
-            response_tools.execute(gateway, action)
+    response_tools.execute_all(gateway, actions)
     manager.save(incident)
 
 
@@ -90,9 +88,7 @@ def run_incident(incident: Incident, manager: IncidentManager, gateway: TrustedD
     response = response_agent.run(incident, investigation.output)
     decisions.append(_record("response_agent", incident, response))
     actions = policy_engine.apply(incident, response.output.actions)
-    for action in actions:
-        if action.auto_execute:
-            response_tools.execute(gateway, action)
+    response_tools.execute_all(gateway, actions)
     incident.response_actions = actions
     manager.save(incident)
 
