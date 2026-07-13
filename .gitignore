@@ -29,5 +29,4 @@ dist/
 .DS_Store
 Thumbs.db
 
-# Local Claude Code settings (machine-specific paths/permissions)
-.claude/settings.local.json
+
