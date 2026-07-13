@@ -1,10 +1,13 @@
 """Central tunables for Relay. All thresholds are calibratable, not universal truths."""
 
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 PROJECT_NAME = "Relay"
 
@@ -47,7 +50,7 @@ Z_SCORE_THRESHOLD = 3.0
 IFOREST_CONTAMINATION = 0.05
 IFOREST_N_ESTIMATORS = 100
 IFOREST_TRAIN_SAMPLES = 2000
-ML_MODEL_PATH = "detection/isolation_forest.joblib"
+ML_MODEL_PATH = PROJECT_ROOT / "detection" / "isolation_forest.joblib"
 
 # --- Physics validator tolerances (normalized residual magnitude) ---
 POWER_BALANCE_TOLERANCE = 0.08  # generator noise alone gives a natural tail up to ~5%; measured empirically
