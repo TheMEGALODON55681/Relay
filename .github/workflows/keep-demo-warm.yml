@@ -29,4 +29,6 @@ jobs:
         run: python scripts/warm_deployment.py
 
       - name: Keep this schedule active
-        uses: gautamkrishnar/keepalive-workflow@v2
+        run: gh workflow enable keep-demo-warm.yml
+        env:
+          GH_TOKEN: ${{ github.token }}
