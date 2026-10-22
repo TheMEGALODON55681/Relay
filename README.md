@@ -305,14 +305,15 @@ The dashboard's job is to make the pipeline's internal state legible, not to be 
 - **The optimizer is a dispatch stub**, not a real economic dispatch solver; see the note under [Key results](#key-results) on how that shapes the cost/emissions numbers.
 ## Roadmap
  
+Roadmap
 Near term:
 - [ ] Autoencoder and LSTM temporal detection, ensemble scoring, and calibration
 - [ ] A real MQTT broker in place of the in-process event bus
-Mid term:
+  Mid term:
 - [ ] Additional attack types: replay, timestamp manipulation, command injection
 - [ ] Weighted least squares state estimation in place of the simplified physics fallback
 - [ ] A React or Next.js dashboard in place of Streamlit
-Long term:
+  Long term:
 - [ ] Containerization
 - [ ] Integration of a public smart-grid or FDIA dataset
 ## License
